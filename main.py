@@ -183,6 +183,14 @@ class MainWindow(QMainWindow):
         self._map_debounce.setInterval(800)
         self._map_debounce.timeout.connect(self._refresh_map)
 
+        # Coalesce large NodeDB bursts into a single UI update.
+        # This avoids repeated model resets/sorts/repaints when 100+ nodes arrive.
+        self._pending_nodes_batch = []
+        self._nodes_flush_timer = QTimer(self)
+        self._nodes_flush_timer.setSingleShot(True)
+        self._nodes_flush_timer.setInterval(120)
+        self._nodes_flush_timer.timeout.connect(self._flush_nodes_batch)
+
         self._console_window = ConsoleWindow()
 
         self._init_ui()
@@ -402,6 +410,11 @@ class MainWindow(QMainWindow):
         self.table_view.setSortingEnabled(True)
         self.table_view.setSelectionBehavior(QTableView.SelectRows)
         self.table_view.setWordWrap(False)
+        # Performance: reduce paint/layout work for large node tables.
+        self.table_view.setShowGrid(False)
+        self.table_view.setCornerButtonEnabled(False)
+        self.table_view.setTextElideMode(Qt.ElideRight)
+        self.table_view.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
         # CM4 performance: pixel-level scrolling reduces repaint area vs item-based
         self.table_view.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.table_view.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
@@ -600,7 +613,7 @@ class MainWindow(QMainWindow):
         self.worker.my_node_id_ready.connect(self._on_my_node_id_ready)
         self.worker.local_node_ready.connect(self._on_local_node_ready)
         self.worker.local_position_updated.connect(self._on_local_position_updated)
-        self.worker.interface_ready.connect(self.config_tab.set_interface)
+        # self.worker.interface_ready.connect(self.config_tab.set_interface)
         self.worker.traceroute_result.connect(self._on_traceroute_result)
         self.worker.neighbor_info_received.connect(
             lambda nid, nbs: self.map_widget.add_neighbor_info(nid, nbs)
@@ -715,10 +728,31 @@ class MainWindow(QMainWindow):
             logger.debug(f"_poll_local_metrics error: {e}")
 
     def _on_nodes_batch(self, batch: list):
+        """Queue NodeDB bursts and flush them once after the event loop breathes.
+
+        Large networks can emit many node batches quickly. Processing each batch
+        immediately causes repeated table resets, sorting and repainting, which
+        feels slow around 200+ nodes.
+        """
+        if not batch:
+            return
+        self._pending_nodes_batch.extend(batch)
+        self._nodes_flush_timer.start()
+
+    def _flush_nodes_batch(self):
+        if not self._pending_nodes_batch:
+            return
+        batch = self._pending_nodes_batch
+        self._pending_nodes_batch = []
+        self._process_nodes_batch(batch)
+
+    def _process_nodes_batch(self, batch: list):
         if not batch:
             return
 
-        # ── Suspend sorting during batch to avoid O(n log n) per node ──
+        # ── Suspend view updates and sorting during batch ────────────────
+        # Prevents repeated repaints while many nodes are being inserted.
+        self.table_view.setUpdatesEnabled(False)
         # setSortingEnabled(False) detaches the sort proxy temporarily so
         # update_node_silent() never triggers a resort mid-batch.
         self.table_view.setSortingEnabled(False)
@@ -776,6 +810,7 @@ class MainWindow(QMainWindow):
         self.source_model.refresh_all()
         self.table_view.setSortingEnabled(True)
         self.table_view.sortByColumn(8, Qt.DescendingOrder)
+        self.table_view.setUpdatesEnabled(True)
         self.proxy_model.invalidateFilter()
         self._update_node_count()
 

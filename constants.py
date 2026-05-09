@@ -35,7 +35,7 @@ APP_STYLESHEET = f"""
 QMainWindow, QWidget {{
     background-color: {DARK_BG};
     color: {TEXT_PRIMARY};
-    font-family: 'Menlo', 'Cascadia Code', 'JetBrains Mono', 'Consolas', 'Courier New', monospace;
+    font-family: 'Menlo', 'Monaco';
     font-size: 12px;
 }}
 QMenuBar {{
